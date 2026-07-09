@@ -153,7 +153,7 @@ def run_backtest(prices, get_position_fn, algo_idx=0, start_day=61, verbose=Fals
 
 
 if __name__ == "__main__":
-    from main import getMyPosition  # your strategy
+    from The_Limitless_Liquidity_Providers import getMyPosition  # your strategy
 
     prices = generate_synthetic_data(n_inst=51, n_days=750, seed=42)
     results = run_backtest(prices, getMyPosition, algo_idx=0, start_day=61)
