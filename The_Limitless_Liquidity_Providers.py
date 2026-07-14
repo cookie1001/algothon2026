@@ -2,6 +2,7 @@ import numpy as np
 
 nInst=51
 currentPos = np.zeros(nInst)
+
 def getMyPosition (prcSoFar):
     global currentPos
     (nins,nt) = prcSoFar.shape
