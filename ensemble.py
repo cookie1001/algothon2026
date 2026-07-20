@@ -30,11 +30,18 @@ class Strategy:
         raise NotImplementedError
 
 
-# ---------------------------------------------------------------------------
-# 2. Regime detection -> probabilities, not a hard label
-# ---------------------------------------------------------------------------
+class MeanReversion():
+   None
+   
+class Momentum():
+   None
+   
+class StatArb():
+   None
+   
+class RegimeDetector():
+   None
 
-# ---------------------------------------------------------------------------
-# 3. Ensemble: regime probabilities -> weights -> combined signal
-# ---------------------------------------------------------------------------
+class Ensemble():
+   None
 
