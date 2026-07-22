@@ -37,7 +37,20 @@ class Momentum():
    None
    
 class StatArb():
-   None
+   def __init__(self):
+      None
+   
+   def standardise_returns():
+      None
+      
+   def extract_residuals():
+      None
+   
+   def analyze_ou_process():
+      None
+      
+   def signal():
+      None
    
 class RegimeDetector():
    None
