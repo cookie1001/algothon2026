@@ -14,3 +14,23 @@ scipy
 scikit-learn
 statsmodels
 matplotlib
+
+# Added by us - NOT part of the grading sandbox's base image.
+hmmlearn
+
+# IMPORTANT, at submission time:
+#
+# The submission uses hmmlearn (GaussianHmmRegimeDetector). Everything else it
+# imports - numpy, pandas, scipy, scikit-learn, statsmodels - is already in the
+# sandbox. So the submission's own requirements.txt must contain exactly one
+# line:
+#
+#     hmmlearn
+#
+# Do NOT submit a copy of this file: re-declaring versions already pinned in
+# the sandbox risks silently overriding them.
+#
+# PERFORMANCE NOTE for anything using statsmodels in a daily loop:
+# `adfuller` defaults to autolag='AIC', which fits ~13 OLS models per call
+# (1.700 ms vs 0.198 ms with maxlag set and autolag=None). That default was
+# 84% of the runtime in the original strategy. Always pin both.
