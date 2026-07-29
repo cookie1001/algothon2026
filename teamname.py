@@ -131,10 +131,8 @@ class StatArbConfig:
     n_factors: int = 30
     """Factors stripped out before looking for reversion. 30 of 50 looks
     aggressive, but only the first three eigenvalues (11.9, 2.8, 1.9) stand
-    clear of the noise bulk - everything from the 8th on sits at ~1.0, i.e.
-    pure sampling noise, so projecting those out costs almost no real signal.
-    A joint n_factors x reversion_window walk-forward grid put 30 on a plateau
-    that stays good across reversion windows 15-25, rather than on a spike."""
+    clear of the noise bulk - everything from the 8th on sits at ~1.0. See the
+    n_factors x reversion_window grid in strategy_lab/README.md."""
 
     reversion_window: int = 20
     """Days of cumulative residual fed to the OU/AR(1) fit - the horizon of the
@@ -168,92 +166,19 @@ class StatArbConfig:
 class MeanReversionConfig:
     """Hyperparameters for the per-instrument mean-reversion strategy.
 
-    Short-horizon reversion in the ALGO-residual. Standalone it scores below
-    stat_arb (pooled 80 with the horizon blend below, vs stat_arb's 117) but
-    its PL is almost uncorrelated with stat-arb's (+0.02), so it is kept in
-    the ensemble at a small weight rather than dropped.
-
-    WHY THE WEIGHT STAYS SMALL - this strategy is fat-tailed (excess kurtosis
-    +1.31 on its daily PL, against +0.01 for stat_arb, which is essentially
-    Gaussian). Over days 280-1000 standalone it makes ~$93k total but its
-    worst 20 days alone lose ~$72k.
-
-    ROOT CAUSE, diagnosed rather than guessed: uncontrolled market-factor
-    exposure, because THE ALGO HEDGE PHYSICALLY CANNOT BE LARGE ENOUGH. Run
-    standalone, this strategy carries a mean pre-hedge market exposure of
-    ~$166k, but ALGO's position limit is $100k. 75% of days require more
-    hedge than the cap allows, and on its worst 20 days the ALGO position is
-    pinned at the cap 100% of the time. Leftover net market exposure averages
-    $77k on normal days and $158k on tail days, and
-    corr(net_beta_$ x ALGO_return, PL) = +0.68. By contrast stat_arb strips
-    30 principal components and has no tail problem at all - the difference in
-    factor control is the whole story.
-
-    A FIX WAS BUILT AND REJECTED ON THE EVIDENCE. Enforcing exact
-    beta-neutrality (shrinking whichever side carries more beta until the
-    net is zero - zero free parameters) works exactly as intended on the
-    tail: worst day -$6,228 -> -$2,841, days worse than -$3,000 19 -> 0,
-    worst-20 -$71.6k -> -$39.9k. But it also cuts total PL from ~$93k to
-    ~$26k, and walk-forward pooled score got WORSE at every ensemble weight
-    tried (at 0.1: 118.3 -> 111.9; at 0.2: 106.8 -> 99.8; at 0.5: 73.2 ->
-    71.5). It is not shipped.
-
-    The reason is the important part: decomposing the PL shows the market-
-    factor component contributes roughly +$44k of the ~$93k total. So about
-    half of this strategy's backtested performance is a DIRECTIONAL MARKET
-    BET, not idiosyncratic reversion - it paid because ALGO happened to drift
-    up over this sample. Any neutralisation necessarily removes it. That
-    cuts both ways: the exposure is unrepeatable on unseen data, but removing
-    it also removes measured score, so neither choice is free.
-
-    The practical conclusion is that this strategy's TRUE edge is smaller
-    than its backtest suggests, which is an independent argument for keeping
-    its ensemble weight low - stronger than the tail argument, and not
-    contingent on it. Do not raise the weight on the strength of its
-    standalone PL.
-
-    Two candidate fixes were also tested and rejected:
-      * A per-instrument stop-loss would be actively HARMFUL. Holding the
-        tail-day position fixed, it recovers: +$1,563 mean by day 3, positive
-        70-74% of the time. Stopping out locks in the loss at the worst
-        price, which is what reversion strategies do wrong.
-      * Multi-factor residualisation (stripping k PCs like stat_arb) would
-        likely fix the tail, but converges this strategy toward being a
-        second stat_arb and would destroy the near-zero PL correlation
-        (+0.02) that is the entire reason it earns a weight.
+    Short-horizon reversion in the ALGO-residual. Standalone it scores well
+    below stat_arb (pooled 65, SR 1.15, vs stat_arb's 117, SR 1.90) but its PL
+    is almost uncorrelated with stat-arb's (+0.02), so it is kept in the
+    ensemble at a small weight rather than dropped - see
+    EnsembleConfig.baseline_weights for the full trade-off, including the
+    honest fact that walk-forward alone would weight this at zero.
     """
 
-    lookback_windows: tuple = (3, 5)
-    """Reversion horizons to average over, same pattern as MomentumConfig.
-
-    Was a single `lookback_window = 5`. Splitting the data into a quiet
-    stretch (days 500-750) and a strong one (750-999) showed the two horizons
-    are near mirror images of each other, which is exactly the case for
-    blending rather than picking:
-
-        lookback   quiet-stretch SR   strong-stretch SR
-            3            1.73               0.74
-            5            0.79               1.45
-        blend(3,5)       1.71               1.28
-
-    A 3-day signal catches day-to-day noise-reversion that only shows up
-    cleanly once larger multi-day swings are absent; the 5-day signal needs
-    those larger swings. Averaging keeps almost all of each.
-
-    Validated across all 21 walk-forward folds, not just those two windows:
-    standalone pooled score 79.7 vs 62.4 for lookback 5 alone, and profitable
-    folds rise from 76% to 90%. Adding 10 to the blend was worse (74.5) -
-    (3, 5) is the sweet spot."""
-
+    lookback_window: int = 5
     volatility_span: int = 60
     entry_zscore: float = 1.0
     exit_zscore: float = 0.5
     max_abs_zscore: float = 3.0
-    """Winsorises the per-instrument t-statistic. Note this has less effect on
-    sizing than it looks: `SizingConfig.signal_gain` is 8.0, so the combined
-    signal saturates to a full-size position well before this clip binds. It
-    limits one instrument's influence on the cross-sectional z-score, not the
-    position size of an already-saturated name."""
     beta_hedge_against_algo: bool = True
     """Test reversion on the ALGO-residual rather than the raw price, so a
     market-wide move is not mistaken for an idiosyncratic dislocation. Worth
@@ -270,21 +195,8 @@ class MomentumConfig:
     days, cross-sectional IC negative throughout, t as low as -3.8). Plain
     momentum loses money in every configuration we validated, from -136 to
     roughly 0. The trend gate below exists to restrict it to the minority of
-    instruments that genuinely trend.
-
-    The "trade time-series momentum on the volatile names" idea was tested
-    specifically and REJECTED, three independent ways:
-      1. Correlation between an instrument's realised volatility and its
-         variance ratio (trend tendency) is -0.196 - high-vol names revert
-         MORE, not less.
-      2. At every lookback from 5 to 100 days, the 15 most-volatile names show
-         a more negative (stronger reversion) information coefficient than the
-         15 least-volatile ones.
-      3. Full walk-forward backtests of TS momentum restricted to the top
-         5/10/15/25 most-volatile names, at two lookback horizons each: every
-         configuration scored negative, -34 to -197 pooled.
-    Pairs trading is the better use of a build slot than pursuing this
-    further.
+    instruments that genuinely trend; see strategy_lab/README.md for what it
+    is and is not worth.
     """
 
     lookback_windows: tuple = (60, 120)
@@ -317,35 +229,42 @@ class MomentumConfig:
 
 @dataclass
 class RegimeConfig:
-    """Hyperparameters for the hmmlearn Gaussian HMM regime detector."""
+    """Hyperparameters for the hmmlearn Gaussian HMM regime detector.
+
+    The fitting mechanics here (standardise-then-fit, multi-restart
+    selection by log-likelihood) are ported from a standalone regime-
+    detector prototype that ran into two failure modes with a naive
+    single-shot hmmlearn call:
+
+      1. Raw feature variance is tiny (~1e-5 to 1e-6 here), far below
+         hmmlearn's `min_covar` floor - without standardising first, that
+         floor clamps both states' covariances to nearly the same value and
+         the two "regimes" become statistically indistinguishable
+         regardless of what the EM fit finds. `GaussianHmmRegimeDetector`
+         standardises features (zero mean, unit variance) before every fit
+         so the floor sits in a sane range.
+      2. EM on a couple of features with a few hundred samples is prone to
+         a degenerate local optimum on a single attempt. `n_restarts` reruns
+         Baum-Welch from different seeds and keeps only the best-converged
+         fit by log-likelihood.
+    """
 
     n_regimes: int = 2
     feature_window: int = 250
-
     volatility_window: int = 15
     """Rolling window (days) for the market-return volatility feature."""
-
-    refit_interval_days: int = 25
+    refit_interval_days: int = 20
     """Refitting Baum-Welch daily is wasteful and makes the regime label
     jitter. Refit on this cadence; run the cheap forward pass in between."""
-
     n_em_iterations: int = 40
-
     n_restarts: int = 5
-    """Baum-Welch restarts per fit, keeping the best converged run by
-    log-likelihood. EM on two features with a few hundred samples can land in
-    a degenerate local optimum on any single attempt, and a degenerate regime
-    fit is worse than none - it produces confident, meaningless weights.
-    Measured benefit on walk-forward is small (pooled 115.0 at 1-3 restarts,
-    116.6 at 5) and arguably inside the noise, but with vectorised feature
-    building the whole detector costs only ~2 ms/day more than a single-shot
-    fit, so this is cheap insurance against a failure mode that would be hard
-    to notice on new data."""
-
+    """Random restarts per fit; only converged runs are eligible, and the
+    one with the best (standardised-feature) log-likelihood is kept."""
     min_covar: float = 1e-3
-    """hmmlearn's covariance floor. Safe only because features are
-    standardised before fitting - see GaussianHmmRegimeDetector.fit."""
-
+    """Safe now that features are standardised before fitting - see the
+    class docstring above for why this floor is dangerous unstandardised."""
+    min_fit_samples: int = 30
+    """Minimum feature rows required before a fit is attempted at all."""
     random_seed: int = 0
 
 
@@ -362,40 +281,39 @@ class EnsembleConfig:
     )
     """Weight each strategy gets before the regime adjustment.
 
-    This weight is a DISCLOSED JUDGMENT CALL, not a validated optimum, and
-    the two checks genuinely disagree. Re-swept after the horizon blend in
-    MeanReversionConfig and the regime-detector change:
+    REVISED after fixing a real bug in IndexHedgeOverlay (see its docstring):
+    the old hedge computation was injecting noise into every configuration's
+    score, and it turned out to inject *more* noise into some weight mixes
+    than others - so the previous ratio here (1 : 0.5 : 0.05) was partly
+    picked on a corrupted signal. Re-swept after the fix:
 
-        mean_reversion weight   0.0    0.05   0.1    0.2    0.3    0.5
-        walk-forward pooled    126.0  120.1  116.6  104.7   81.6   71.9
-        profitable folds        0.86   0.86   0.90   0.86   0.86   0.76
-        eval.py at 500 days     64.1   74.0   90.5  113.9   96.6  101.4
+    stat_arb alone now scores HIGHER on its own (117 pooled, SR 1.90) than
+    every blend tried, and score falls off close to monotonically as
+    mean_reversion's weight rises: 0.05 -> 112, 0.1 -> 105, 0.25 -> 88, 0.5 -> 80,
+    1.0 -> 72. The three PL streams are still almost perfectly uncorrelated
+    (+0.016, -0.030, -0.050) - that part of the original argument holds - but
+    near-zero correlation does not guarantee blending helps when one strategy
+    (mean_reversion, standalone SR 1.15) is meaningfully lower quality than the
+    other (stat_arb, standalone SR 1.90) under THIS score function, which
+    rewards mean(PL) scaled by a Sharpe-dependent factor rather than pure
+    portfolio-theory Sharpe-of-the-blend.
 
-    Walk-forward (21 folds, the most data) says 0. The 500-day eval window -
-    which is what the competition actually scores - says 0.2. They cannot
-    both be right, and 0.1 is chosen as the point that gives up ~7% of
-    walk-forward score to recover a large part of the eval-window gain, while
-    also having the best fold consistency of any setting tried (90% of folds
-    profitable, better than 0.0's 86%).
+    So walk-forward, the most-data, most-trustworthy check, says weight
+    mean_reversion at 0. It is kept at a small 0.1 instead as a disclosed
+    judgment call, not a validated optimum: on the specific holdout (150 days)
+    and the last-500-days eval.py window, a 0.1 weight scores meaningfully
+    BETTER than zero (holdout 188 vs 129; eval500 87 vs 72) - the opposite
+    ranking from walk-forward. Small weight keeps a working, standalone-
+    positive second strategy live rather than zeroing it out on one
+    aggregate number, while capping the walk-forward cost at ~10% (105 vs
+    117). If you want the walk-forward-optimal choice, set this to 0.0.
 
-    The three PL streams are almost perfectly uncorrelated (+0.016, -0.030,
-    -0.050), but near-zero correlation does not guarantee blending helps: this
-    score function rewards mean(PL) scaled by a Sharpe-dependent factor, not
-    portfolio-theory Sharpe-of-the-blend, and mean_reversion is genuinely the
-    lower-quality signal. The deeper reason it cannot carry more weight is its
-    tail - see MeanReversionConfig, where the worst 20 days roughly cancel the
-    entire period's PL. Fix that tail and this weight can rise; until then it
-    should not.
-
-    If you want the walk-forward-optimal choice, set this to 0.0. If you want
-    to bet on the eval window specifically, 0.2. Both are defensible; neither
-    is free.
-
-    momentum is at 0.0. With the hedge fixed, momentum alone measures pooled
-    -21 standalone (worse than the earlier, hedge-noise-contaminated ~0). See
-    MomentumConfig for the trend-gate story and for why the volatility-
-    targeted time-series variant was tested and rejected. Raise this only if a
-    rebuild - most likely pairs trading - validates positive standalone."""
+    momentum is at 0.0. With the hedge fixed, momentum alone now measures
+    pooled -21 standalone (worse than the earlier, hedge-noise-contaminated
+    ~0) - see MomentumConfig for the trend-gate story and
+    strategy_lab/README.md for the volatility-targeted time-series variant
+    under investigation. Raise it only if that rebuild validates positive
+    standalone."""
 
     minimum_weight_floor: float = 0.05
     """Never let the regime call zero out a strategy with a non-zero baseline -
@@ -550,9 +468,7 @@ class PortfolioConfig:
         """
         return max(
             self.stat_arb.reversion_window + 30,
-            max(self.mean_reversion.lookback_windows)
-            + self.mean_reversion.beta_estimation_window
-            + 5,
+            self.mean_reversion.lookback_window + self.mean_reversion.beta_estimation_window + 5,
             self.momentum.variance_ratio_window + 5,
             60,
         ) + 2
@@ -716,9 +632,11 @@ def compute_volatility_scale(
 
     > 1 (up to `ceiling`) when the market has been calmer than usual lately;
     < 1 (down to `floor`) when it has been more volatile than usual. Uses
-    ALGO specifically (the cleanest market-wide vol signal available, same
-    reasoning as GaussianHmmRegimeDetector's features) rather than the whole
-    cross-section, so this is one cheap calculation, not 50.
+    ALGO specifically (a cheap, clean market-wide vol proxy - collinear with
+    the equal-weighted market return `GaussianHmmRegimeDetector` builds its
+    features from, since ALGO is an exact fixed-weight basket of the other
+    50) rather than the whole cross-section, so this is one cheap
+    calculation, not 50.
 
     Returns 1.0 (no scaling) until there is enough history for both the
     lookback window and a reference "typical" vol to be meaningful.
@@ -953,9 +871,8 @@ class MeanReversionStrategy(SignalStrategy):
          re-run periodically so the qualifying list changes over time. Do not
          screen once on the full sample - that leaks the future into every
          fold.
-      2. Set the reversion horizons per instrument from the fitted AR(1)
-         half-life (`fit_ar1`) instead of one global `lookback_windows` tuple
-         shared by every name.
+      2. Set `lookback_window` per instrument from the fitted AR(1) half-life
+         (`fit_ar1`) instead of one global number.
       3. The ALGO-beta residualisation is worth ~180 points of pooled score at
          lookback 5. Anything that improves the beta estimate (shrinkage,
          a longer window, a robust regression) is worth trying.
@@ -979,7 +896,7 @@ class MeanReversionStrategy(SignalStrategy):
         if self._open_position_sign is None or self._open_position_sign.shape[0] != n_instruments:
             self._open_position_sign = np.zeros(n_instruments)
 
-        if n_days < max(cfg.lookback_windows) + 25:
+        if n_days < cfg.lookback_window + 25:
             return np.zeros(n_instruments)
 
         returns_by_day = compute_log_returns(prices_by_day)
@@ -1003,23 +920,11 @@ class MeanReversionStrategy(SignalStrategy):
 
         standardised = volatility_standardised_returns(working_returns, cfg.volatility_span)
 
-        # Average the displacement across several horizons rather than betting
-        # on one. Cumulative standardised return over a lookback is the
-        # displacement from the rolling mean in volatility units; dividing by
-        # sqrt(window) turns it into a t-statistic, which is what makes
-        # different horizons commensurable enough to average in the first
-        # place (and keeps entry/exit thresholds meaning the same thing at
-        # every horizon).
-        displacement = np.zeros(n_instruments)
-        horizons_used = 0
-        for lookback in cfg.lookback_windows:
-            if standardised.shape[0] < lookback:
-                continue
-            displacement += standardised[-lookback:].sum(axis=0) / np.sqrt(lookback)
-            horizons_used += 1
-        if horizons_used == 0:
-            return np.zeros(n_instruments)
-        displacement /= horizons_used
+        # Cumulative standardised return over the lookback = displacement from
+        # the rolling mean in volatility units; /sqrt(window) makes it a
+        # t-statistic so the threshold means the same thing at any lookback.
+        displacement = standardised[-cfg.lookback_window :].sum(axis=0)
+        displacement /= np.sqrt(cfg.lookback_window)
 
         signal_per_instrument = -np.clip(
             np.nan_to_num(displacement), -cfg.max_abs_zscore, cfg.max_abs_zscore
@@ -1133,29 +1038,62 @@ class MomentumStrategy(SignalStrategy):
 # =============================================================================
 
 
+_warned_hmm_unavailable = False
+
+
+class _RegimeFitInsufficientHistory(Exception):
+    """Raised internally when there isn't yet enough feature history to
+    attempt a fit. Expected/normal early on; not warned about."""
+
+
+class _RegimeFitFailed(Exception):
+    """Raised internally when every restart failed to converge despite
+    having enough data. Not expected; triggers a one-time warning."""
+
+
+def _warn_hmm_unavailable_once() -> None:
+    """Warn loudly, once, instead of letting a missing hmmlearn silently
+    degrade regime detection to equal (0.5/0.5) weighting for the rest of
+    the run without anyone noticing."""
+    global _warned_hmm_unavailable
+    if not _warned_hmm_unavailable:
+        print(
+            "[teamName] WARNING: hmmlearn not importable - regime detection "
+            "is disabled and every day will use equal (0.5/0.5) regime "
+            "weighting. Check that hmmlearn is declared in requirements.txt "
+            "for this submission."
+        )
+        _warned_hmm_unavailable = True
+
+
 class GaussianHmmRegimeDetector:
-    """Two-state Gaussian HMM over market-state features, via hmmlearn.
+    """Two-state Gaussian HMM over market-wide return features, via hmmlearn.
 
     Features (per day, on the trailing window):
-      1. |market return| - market return is the equal-weighted mean log return
-         across all instruments that day.
-      2. Rolling volatility of market return over `volatility_window` days -
-         the feature that actually separates a calm state from a stressed one.
+      1. |market return| - market return is the equal-weighted mean log
+         return across all instruments for that day.
+      2. Rolling volatility of market return (`RegimeConfig.volatility_window`
+         days) - the feature that actually separates a calm/range-bound
+         state from a trending/high-vol one.
 
-    NOTE on feature choice: the original plan called for rolling ALGO-basket
-    correlation as a stress feature. That is unusable in this dataset - ALGO is
-    an exact fixed-weight basket of the other 50, so the correlation is pinned
-    at ~1.0 every day and carries no information.
+    Two fixes vs. a naive hmmlearn call, both load-bearing (see
+    `RegimeConfig` for the failure modes each one closes):
+      1. Features are standardised (zero mean, unit variance) before every
+         fit, so hmmlearn's covariance floor (`min_covar`) lands somewhere
+         that actually lets the two states separate.
+      2. The fit is retried from `n_restarts` different seeds and only the
+         best-converged run (by log-likelihood on the standardised
+         features) is kept, since EM on two features with limited samples
+         is prone to a degenerate local optimum on a single attempt.
 
-    An earlier version here used ALGO's signed return, |ALGO return| and
-    cross-sectional dispersion. The current pair validated better with
-    everything else held constant (walk-forward pooled 116.6 vs 114.8,
-    eval.py-at-250 161.6 vs 143.9), and a *rolling* volatility feature is a
-    more natural description of a persistent regime than a single day's
-    |return|, which is mostly noise. Using the equal-weighted market return
-    rather than ALGO specifically also keeps this detector working unchanged
-    if ALGO's column index ever moves - the two are near-identical anyway,
-    since ALGO is an exact basket of the other 50.
+    NOTE on feature choice: the original plan called for ALGO's own return
+    plus rolling ALGO-basket correlation as stress features. Correlation is
+    unusable in this dataset - ALGO is an exact fixed-weight basket of the
+    other 50, so it is pinned at ~1.0 every day and carries no information.
+    The equal-weighted market return used here is highly collinear with
+    ALGO's own return for the same reason, so using it directly (rather
+    than singling out ALGO) is equivalent and keeps this detector
+    self-contained if ALGO's column index ever changes.
     """
 
     def __init__(self, config: Optional[RegimeConfig] = None):
@@ -1164,145 +1102,147 @@ class GaussianHmmRegimeDetector:
         self.calm_state_index = None
         self._feature_mean = None
         self._feature_std = None
-        self._days_at_last_fit = None
+        self._days_at_last_attempt = None
+        self._warned_fit_failure = False
 
     def reset(self) -> None:
         self.model = None
         self.calm_state_index = None
         self._feature_mean = None
         self._feature_std = None
-        self._days_at_last_fit = None
+        self._days_at_last_attempt = None
+        self._warned_fit_failure = False
 
-    def _build_raw_features(self, prices_by_day: np.ndarray) -> Optional[np.ndarray]:
-        """Unstandardised features. Causal: every row uses only data up to and
-        including that trading day. Returns None if there is not yet enough
-        history for the rolling-volatility window.
-        """
+    def _build_features(self, prices_by_day: np.ndarray) -> Optional[np.ndarray]:
+        """Two engineered, unstandardised features per day. Causal: every
+        row uses only data up to and including that trading day - nothing
+        here looks ahead. Returns None if there isn't enough history yet
+        for the rolling-volatility window."""
         cfg = self.config
         window = prices_by_day[-(cfg.feature_window + 1) :]
         returns_by_day = compute_log_returns(window)
         market_return = returns_by_day.mean(axis=1)
 
-        volatility_window = cfg.volatility_window
-        if len(market_return) < volatility_window:
+        win = cfg.volatility_window
+        if len(market_return) < win:
             return None
 
-        # Rolling std via a strided index matrix rather than a Python loop.
-        # This runs on every single day (not just refit days), and the loop
-        # version measured 2.18 ms/call against 0.13 ms here - 16x, for
-        # byte-identical output.
-        n_windows = len(market_return) - volatility_window + 1
-        offsets = np.arange(n_windows)[:, None] + np.arange(volatility_window)[None, :]
-        rolling_volatility = market_return[offsets].std(axis=1)
+        n_vol = len(market_return) - win + 1
+        rolling_vol = np.empty(n_vol)
+        for i in range(n_vol):
+            rolling_vol[i] = market_return[i : i + win].std()
 
-        absolute_return = np.abs(market_return[volatility_window - 1 :])
-        return np.column_stack([absolute_return, rolling_volatility])
-
-    def _standardise(self, raw_features: np.ndarray) -> np.ndarray:
-        """Apply the standardisation captured at fit time.
-
-        This MUST use the stored fit-time constants, not today's window
-        statistics. An earlier version recomputed mean/std from whatever
-        window was current, which meant `predict_proba` was fed features on a
-        different scale from the one the model's means and covariances were
-        estimated on - textbook train/serve skew. It only showed up between
-        refits (the two agree exactly on a refit day), so the regime read
-        drifted progressively over each `refit_interval_days` cycle and then
-        snapped back, which is close to the worst possible failure mode:
-        invisible in a spot check, and worst right before each refit.
-        """
-        return (raw_features - self._feature_mean) / self._feature_std
+        abs_return = np.abs(market_return[win - 1 :])
+        return np.column_stack([abs_return, rolling_vol])
 
     def fit(self, prices_by_day: np.ndarray) -> "GaussianHmmRegimeDetector":
+        """Raises `_RegimeFitInsufficientHistory` or `_RegimeFitFailed` on
+        failure rather than leaving `self.model` untouched silently - see
+        `probability_of_calm_regime`, which is the only caller and decides
+        what to do (fall back to the last good model, or to 0.5) based on
+        which of the two it catches."""
         from hmmlearn.hmm import GaussianHMM
 
         cfg = self.config
-        raw_features = self._build_raw_features(prices_by_day)
-        if raw_features is None or len(raw_features) < 30:
-            raise ValueError("not enough history to fit the regime HMM")
+        features = self._build_features(prices_by_day)
+        if features is None or len(features) < cfg.min_fit_samples:
+            raise _RegimeFitInsufficientHistory("not enough history to fit the regime HMM")
 
-        # Standardise before fitting. hmmlearn's `min_covar` floor sits far
-        # above the raw variance of these features (~1e-5 and below), so
-        # fitting unstandardised would clamp both states' covariances to
-        # essentially the same value and the two "regimes" would be
-        # statistically indistinguishable no matter what EM found.
-        feature_mean = raw_features.mean(axis=0)
-        feature_std = np.maximum(raw_features.std(axis=0), 1e-10)
-        standardised = (raw_features - feature_mean) / feature_std
+        mean = features.mean(axis=0)
+        std = features.std(axis=0) + 1e-12
+        standardised = (features - mean) / std
 
-        # Restart Baum-Welch from several seeds and keep the best converged
-        # run - a single attempt can settle into a degenerate optimum, which
-        # yields confident but meaningless regime probabilities.
-        best_model, best_log_likelihood = None, -np.inf
-        for restart in range(max(cfg.n_restarts, 1)):
-            candidate = GaussianHMM(
+        best_model, best_score = None, -np.inf
+        for seed in range(cfg.n_restarts):
+            model = GaussianHMM(
                 n_components=cfg.n_regimes,
                 covariance_type="diag",
                 n_iter=cfg.n_em_iterations,
                 tol=1e-4,
-                random_state=cfg.random_seed + restart,
+                random_state=cfg.random_seed + seed,
                 min_covar=cfg.min_covar,
             )
             try:
-                candidate.fit(standardised)
-                if not candidate.monitor_.converged:
+                model.fit(standardised)
+                if not model.monitor_.converged:
                     continue
-                log_likelihood = candidate.score(standardised)
+                score = model.score(standardised)
+                if score > best_score:
+                    best_score = score
+                    best_model = model
             except Exception:
                 continue
-            if log_likelihood > best_log_likelihood:
-                best_log_likelihood, best_model = log_likelihood, candidate
 
         if best_model is None:
-            raise ValueError("no HMM restart converged")
+            raise _RegimeFitFailed("no HMM restart converged")
 
         self.model = best_model
-        self._feature_mean = feature_mean
-        self._feature_std = feature_std
-        # The calm state is the one with the lowest mean on the rolling
-        # volatility feature. Labelling by a feature mean (not by fitted
-        # variance) keeps the label stable across refits, so the weights do
-        # not flip sign just because EM relabelled the states.
+        self._feature_mean = mean
+        self._feature_std = std
+        # Calm/range-bound state = lowest mean on the volatility feature
+        # (column 1). Labelling by a feature mean (not fitted variance)
+        # keeps the label stable across refits, so the weights do not flip
+        # sign just because EM relabelled the states.
         self.calm_state_index = int(np.argmin(best_model.means_[:, 1]))
         return self
 
     def probability_of_calm_regime(self, prices_by_day: np.ndarray) -> float:
         """P(calm | data) for today. Refits on the configured cadence.
 
-        Returns 0.5 ("no opinion") when there has never been a successful fit
-        or when scoring today's data fails, so a regime problem degrades to
-        equal weighting instead of taking the book down. A transient refit
-        failure keeps using the last good model rather than discarding it.
+        A failed refit attempt (not enough history yet, or the HMM couldn't
+        converge on any restart) keeps using the last successfully fit
+        model - a transient hiccup shouldn't throw away a perfectly good
+        model just because today's refit didn't land. `needs_refit` is
+        driven off the last *attempt*, not the last *success*, specifically
+        so a persistent failure still backs off to the normal refit cadence
+        instead of retrying (and paying for) all `n_restarts` fits every
+        single day forever.
+
+        Returns 0.5 ("no opinion") only when there has never been a
+        successful fit, or when scoring today's data fails outright. A
+        missing hmmlearn, or an HMM that will not converge, each trigger one
+        loud warning instead of silently degrading for the whole run.
         """
         cfg = self.config
         n_days = prices_by_day.shape[0]
         needs_refit = (
-            self._days_at_last_fit is None
-            or n_days < self._days_at_last_fit  # history restarted (new fold)
-            or n_days - self._days_at_last_fit >= cfg.refit_interval_days
+            self._days_at_last_attempt is None
+            or n_days < self._days_at_last_attempt  # history restarted (new fold)
+            or n_days - self._days_at_last_attempt >= cfg.refit_interval_days
         )
         if needs_refit:
-            # Record the ATTEMPT, not the success. If fitting keeps failing,
-            # this backs off to the normal cadence instead of paying for a
-            # doomed fit every single day for the rest of the run.
-            self._days_at_last_fit = n_days
+            self._days_at_last_attempt = n_days
             try:
                 self.fit(prices_by_day)
+            except ImportError:
+                _warn_hmm_unavailable_once()
+            except _RegimeFitFailed:
+                self._warn_fit_failure_once()
             except Exception:
-                pass  # keep the last good model, if any
+                pass  # e.g. not enough history yet - fall through below
 
         if self.model is None:
             return 0.5  # never successfully fit - genuinely no opinion
 
         try:
-            raw_features = self._build_raw_features(prices_by_day)
-            if raw_features is None:
+            features = self._build_features(prices_by_day)
+            if features is None:
                 return 0.5
-            posteriors = self.model.predict_proba(self._standardise(raw_features))
+            standardised = (features - self._feature_mean) / self._feature_std
+            posteriors = self.model.predict_proba(standardised)
             probability = float(posteriors[-1, self.calm_state_index])
         except Exception:
             return 0.5
         return probability if np.isfinite(probability) else 0.5
+
+    def _warn_fit_failure_once(self) -> None:
+        if not self._warned_fit_failure:
+            print(
+                "[teamName] WARNING: regime HMM fit failed to converge on "
+                "every restart - continuing with the last successfully fit "
+                "model (if any) until a future refit succeeds."
+            )
+            self._warned_fit_failure = True
 
 
 # =============================================================================
